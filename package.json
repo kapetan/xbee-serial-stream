@@ -1,0 +1,20 @@
+{
+  "name": "xbee-fs",
+  "version": "0.0.0",
+  "description": "Simplified XBee file system interaction",
+  "main": "index.js",
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kapetan/xbee-fs.git"
+  },
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kapetan/xbee-fs/issues"
+  },
+  "homepage": "https://github.com/kapetan/xbee-fs#readme",
+  "dependencies": {
+    "mutexify": "^1.3.1",
+    "serialport": "^9.0.2"
+  }
+}
