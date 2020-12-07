@@ -87,6 +87,19 @@ class DeviceStream extends Duplexify {
     const receiver = new YModemReceiverStream()
     const read = receiver.createReadStream()
 
+    const waitForResponse = async value => {
+      return new Promise((resolve, reject) => {
+        const onresponse = data => {
+          if (data === value) {
+            this._commandStream.removeListener('response', onresponse)
+            resolve()
+          }
+        }
+
+        this._commandStream.on('response', onresponse)
+      })
+    }
+
     const command = async () => {
       await this._request
       const release = await this._lock()
@@ -103,10 +116,15 @@ class DeviceStream extends Duplexify {
 
       try {
         await promisify(finished)(read)
+        // Followed by an empty file header
+        const empty = receiver.createReadStream()
+        empty.resume()
+        await promisify(finished)(empty)
       } catch (err) {
         // Ignore, already handled by the stream
       } finally {
         this._setStream(this._commandStream)
+        await waitForResponse('OK')
         release()
       }
     }
@@ -135,22 +153,31 @@ class DeviceStream extends Duplexify {
 }
 
 const main = async function () {
+  // const { Transform } = require('stream')
   const SerialPort = require('serialport')
 
-  const port = new SerialPort('/dev/tty.usbserial-1410', {
+  const port = new SerialPort('/dev/tty.usbserial-1420', {
     baudRate: 9600
   })
 
   const device = new DeviceStream()
 
-  device.pipe(port).pipe(device)
+  device
+    // .pipe(new Transform({ transform: (d, e, c) => { console.log('send', d); c(null, d); } }))
+    .pipe(port)
+    // .pipe(new Transform({ transform: (d, e, c) => { console.log('receive', d); c(null, d); } }))
+    .pipe(device)
 
   const read = device.createReadStream('/flash/main.mpy')
 
   read
     .on('file', o => console.log('>', o))
-    .on('data', d => console.log('>', d.length, d))
+    .on('data', d => console.log('>', d.length))
     .on('end', () => console.log('----------------'))
+
+  await promisify(finished)(read)
+
+  console.log('SH', await device.command('SH'))
 
   // console.log(await device.command('FS GET /flash/main.mpy'))
 

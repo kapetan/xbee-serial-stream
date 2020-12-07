@@ -19,6 +19,14 @@ const RETRY_LIMIT = 5
 
 class TimeoutError extends Error {}
 
+function zeros (buffer, offset, length) {
+  for (let i = offset; i < offset + length; i++) {
+    if (buffer[i]) return false
+  }
+
+  return true
+}
+
 class YModemSenderStream extends Duplex {
   constructor (options) {
     super()
@@ -52,11 +60,9 @@ class YModemReceiverStream extends Duplex {
     let canCount = 0
     let tries = 0
     let fileLength = 0
-    let previousResponse = 0
 
-    const send = (b) => {
-      previousResponse = b
-      this.push(Buffer.of(b))
+    const send = (...b) => {
+      this.push(Buffer.from(b))
     }
 
     const nak = async () => {
@@ -122,7 +128,12 @@ class YModemReceiverStream extends Duplex {
           continue
         }
 
-        if (headerBlock) {
+        if (headerBlock && zeros(block, 2, block.length - 4)) {
+          stream.emit('file', { length: 0 })
+          self.emit('file', { length: 0 }, stream)
+          ack()
+          return
+        } else if (headerBlock) {
           const i = block.indexOf(NUL, 2)
           const name = block.toString('utf8', 2, i)
           const j = block.indexOf(NUL, i + 1)
