@@ -1,50 +1,46 @@
-const { Duplex } = require('stream')
+const { Duplex, finished } = require('stream')
+const { promisify } = require('util')
+const Duplexify = require('duplexify')
 const mutexify = require('mutexify/promise')
-const { YModemSenderStream, YModemReceiverStream } = require('./ymodem-stream')
+const { YModemReceiverStream } = require('./ymodem-stream')
 
 const DELIMETER = Buffer.from('\r')
 
-class DeviceStream extends Duplex {
+class CommandStream extends Duplex {
   constructor () {
     super()
-
-    const lock = mutexify()
-    const future = lock()
-
-    const oninitialize = data => {
-      if (data !== 'OK') {
-        return this.destroy(new Error('unexpected initialization response'))
-      }
-
-      future
-        .then(release => {
-          this.emit('initialize')
-          this._onresponse = onresponse
-          release()
-        })
-        .catch(err => this.destroy(err))
-
-    }
-
-    const onresponse = data => {
-      this.emit('response', data)
-    }
-
-    this._lock = lock
-    this._onresponse = oninitialize
     this._buffer = Buffer.alloc(0)
-
-    this.push('+++')
   }
 
-  async command (cmd, value, terminator) {
-    const release = await this._lock()
+  command (cmd, value, terminator) {
+    const error = cmd === 'FS' ? 'E' : 'ERROR'
+    value = value ? (' ' + value) : ''
+    return this.request('AT' + cmd + value + '\r', error, terminator)
+  }
 
-    try {
-      return await this._command(cmd, value, terminator)
-    } finally {
-      release()
-    }
+  request (data, error, terminator) {
+    return new Promise((resolve, reject) => {
+      this.push(data)
+
+      const lines = []
+      const onresponse = data => {
+        if (terminator == null) {
+          lines.push(data)
+          this.removeListener('response', onresponse)
+          resolve(lines)
+        } else if (data === terminator) {
+          this.removeListener('response', onresponse)
+          resolve(lines)
+        } else if (data.startsWith(error)) {
+          this.removeListener('response', onresponse)
+          reject(new Error('error response: ' + data))
+        } else {
+          lines.push(data)
+        }
+      }
+
+      this.on('response', onresponse)
+    })
   }
 
   _read (n) {}
@@ -55,39 +51,86 @@ class DeviceStream extends Duplex {
 
     while ((position = buffer.indexOf(DELIMETER)) !== -1) {
       const line = buffer.slice(0, position)
-      this._onresponse(line.toString('utf8'))
+      this.emit('response', line.toString('utf8'))
       buffer = buffer.slice(position + DELIMETER.length)
     }
 
     this._buffer = buffer
     cb()
   }
+}
 
-  _command (cmd, value, terminator) {
-    const error = cmd === 'FS' ? 'E' : 'ERROR'
-    value = value ? (' ' + value) : ''
+class DeviceStream extends Duplexify {
+  constructor () {
+    super()
 
-    return new Promise((resolve, reject) => {
-      this.push('AT' + cmd + value + '\r')
+    this._lock = mutexify()
+    this._commandStream = new CommandStream()
+    this._ymodemStream = null
+    this._request = this._requestCommandMode()
 
-      const lines = []
-      const onresponse = data => {
-        if (terminator == null) {
-          lines.push(data)
-          resolve(lines)
-          this.removeListener('response', onresponse)
-        } else if (data === terminator) {
-          resolve(lines)
-          this.removeListener('response', onresponse)
-        } else if (data.startsWith(error)) {
-          reject(new Error('error response: ' + data))
-        } else {
-          lines.push(data)
-        }
+    this._setStream(this._commandStream)
+  }
+
+  async command (cmd, value, terminator) {
+    await this._request
+    const release = await this._lock()
+
+    try {
+      return await this._commandStream.command(cmd, value, terminator)
+    } finally {
+      release()
+    }
+  }
+
+  createReadStream (filename) {
+    const receiver = new YModemReceiverStream()
+    const read = receiver.createReadStream()
+
+    const command = async () => {
+      await this._request
+      const release = await this._lock()
+
+      try {
+        const [result] = await this._commandStream.command('FS GET ' + filename)
+        if (result !== 'Sending file with YMODEM...') throw new Error('unexpected response: ' + result)
+      } catch (err) {
+        release()
+        throw err
       }
 
-      this.on('response', onresponse)
-    })
+      this._setStream(receiver)
+
+      try {
+        await promisify(finished)(read)
+      } catch (err) {
+        // Ignore, already handled by the stream
+      } finally {
+        this._setStream(this._commandStream)
+        release()
+      }
+    }
+
+    command()
+      .catch(err => read.destroy(err))
+
+    read.on('error', err => console.error(err))
+
+    return read
+  }
+
+  createWriteStream (filename, options) {
+
+  }
+
+  _setStream (stream) {
+    this.setReadable(stream)
+    this.setWritable(stream)
+  }
+
+  async _requestCommandMode () {
+    const [result] = await this._commandStream.request('+++')
+    if (result !== 'OK') throw new Error('unexpected response: ' + result)
   }
 }
 
@@ -102,15 +145,23 @@ const main = async function () {
 
   device.pipe(port).pipe(device)
 
+  const read = device.createReadStream('/flash/main.mpy')
+
+  read
+    .on('file', o => console.log('>', o))
+    .on('data', d => console.log('>', d.length, d))
+    .on('end', () => console.log('----------------'))
+
   // console.log(await device.command('FS GET /flash/main.mpy'))
 
-  console.log('NI', await device.command('NI'))
-  console.log('SH', await device.command('SH'))
-  console.log('FS LS', await device.command('FS LS', null, ''))
-  console.log('FS PWD', await device.command('FS PWD'))
-  console.log('FS HASH /flash/main.mpy', await device.command('FS HASH /flash/main.mpy'))
-  console.log('FS INFO', await device.command('FS INFO', null, ''))
-  console.log('FS INFO FULL', await device.command('FS INFO FULL', null, ''))
+  // console.log('+++', await device.request('+++'))
+  // console.log('NI', await device.command('NI'))
+  // console.log('SH', await device.command('SH'))
+  // console.log('FS LS', await device.command('FS LS', null, ''))
+  // console.log('FS PWD', await device.command('FS PWD'))
+  // console.log('FS HASH /flash/main.mpy', await device.command('FS HASH /flash/main.mpy'))
+  // console.log('FS INFO', await device.command('FS INFO', null, ''))
+  // console.log('FS INFO FULL', await device.command('FS INFO FULL', null, ''))
 }
 
 main().catch(err => console.error(err))

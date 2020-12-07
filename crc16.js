@@ -44,15 +44,14 @@ const CRC_TABLE = [
   0x2e93, 0x3eb2, 0x0ed1, 0x1ef0
 ]
 
-module.exports = function (b) {
-    var crc = 0xFFFF
-    var j, i
+module.exports = function (b, offset, length) {
+  let crc = 0
 
-    for (i = 0; i < b.length; i++) {
-        c = b[i]
-        j = (c ^ (crc >> 8)) & 0xFF
-        crc = CRC_TABLE[j] ^ (crc << 8)
-    }
+  for (let i = offset; i < offset + length; i++) {
+    const c = b[i]
+    const j = (c ^ (crc >> 8)) & 0xFF
+    crc = CRC_TABLE[j] ^ (crc << 8)
+  }
 
-    return ((crc ^ 0) & 0xFFFF)
+  return ((crc ^ 0) & 0xFFFF)
 }
