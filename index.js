@@ -2,7 +2,7 @@ const { Duplex, finished } = require('stream')
 const { promisify } = require('util')
 const Duplexify = require('duplexify')
 const mutexify = require('mutexify/promise')
-const { YModemReceiverStream } = require('./ymodem-stream')
+const { YModemReceiverStream, YModemSenderStream } = require('./ymodem-stream')
 
 const DELIMETER = Buffer.from('\r')
 
@@ -87,19 +87,6 @@ class DeviceStream extends Duplexify {
     const receiver = new YModemReceiverStream()
     const read = receiver.createReadStream()
 
-    const waitForResponse = async value => {
-      return new Promise((resolve, reject) => {
-        const onresponse = data => {
-          if (data === value) {
-            this._commandStream.removeListener('response', onresponse)
-            resolve()
-          }
-        }
-
-        this._commandStream.on('response', onresponse)
-      })
-    }
-
     const command = async () => {
       await this._request
       const release = await this._lock()
@@ -124,7 +111,7 @@ class DeviceStream extends Duplexify {
         // Ignore, already handled by the stream
       } finally {
         this._setStream(this._commandStream)
-        await waitForResponse('OK')
+        await this._waitForResponse('OK')
         release()
       }
     }
@@ -132,13 +119,45 @@ class DeviceStream extends Duplexify {
     command()
       .catch(err => read.destroy(err))
 
-    read.on('error', err => console.error(err))
-
     return read
   }
 
   createWriteStream (filename, options) {
+    const sender = new YModemSenderStream()
+    const write = sender.createWriteStream({ filename: filename, ...options })
 
+    const command = async () => {
+      await this._request
+      const release = await this._lock()
+
+      try {
+        const [result] = await this._commandStream.command('FS PUT ' + filename)
+        if (result !== 'Receiving file with YMODEM...') throw new Error('unexpected response: ' + result)
+      } catch (err) {
+        release()
+        throw err
+      }
+
+      this._setStream(sender)
+
+      try {
+        await promisify(finished)(write)
+        const empty = sender.createWriteStream()
+        empty.end()
+        await promisify(finished)(empty)
+      } catch (err) {
+        // Ignore, already handled by the stream
+      } finally {
+        this._setStream(this._commandStream)
+        await this._waitForResponse('OK')
+        release()
+      }
+    }
+
+    command()
+      .catch(err => write.destroy(err))
+
+    return write
   }
 
   _setStream (stream) {
@@ -150,10 +169,23 @@ class DeviceStream extends Duplexify {
     const [result] = await this._commandStream.request('+++')
     if (result !== 'OK') throw new Error('unexpected response: ' + result)
   }
+
+  async _waitForResponse (value) {
+    return new Promise((resolve, reject) => {
+      const onresponse = data => {
+        if (data === value) {
+          this._commandStream.removeListener('response', onresponse)
+          resolve()
+        }
+      }
+
+      this._commandStream.on('response', onresponse)
+    })
+  }
 }
 
 const main = async function () {
-  // const { Transform } = require('stream')
+  const { Transform } = require('stream')
   const SerialPort = require('serialport')
 
   const port = new SerialPort('/dev/tty.usbserial-1420', {
@@ -163,19 +195,42 @@ const main = async function () {
   const device = new DeviceStream()
 
   device
-    // .pipe(new Transform({ transform: (d, e, c) => { console.log('send', d); c(null, d); } }))
+    .pipe(new Transform({
+      transform: (d, e, c) => {
+        console.log('send', d)
+        c(null, d)
+      }
+    }))
     .pipe(port)
-    // .pipe(new Transform({ transform: (d, e, c) => { console.log('receive', d); c(null, d); } }))
+    .pipe(new Transform({
+      transform: (d, e, c) => {
+        console.log('receive', d)
+        c(null, d)
+      }
+    }))
     .pipe(device)
 
-  const read = device.createReadStream('/flash/main.mpy')
+  console.log('FS RM', await device.command('FS RM /flash/text.txt'))
 
-  read
-    .on('file', o => console.log('>', o))
-    .on('data', d => console.log('>', d.length))
-    .on('end', () => console.log('----------------'))
+  const write = device.createWriteStream('/flash/text.txt', { length: 1800 })
 
-  await promisify(finished)(read)
+  write
+    .on('error', err => console.error(err))
+    .on('finish', () => console.log('----------------'))
+
+  write.write(Buffer.alloc(1500).fill('hello'))
+  write.write(Buffer.alloc(300).fill('world'))
+  write.end()
+
+  // const read = device.createReadStream('/flash/main.mpy')
+
+  // read
+  //   .on('error', err => console.error(err))
+  //   .on('file', o => console.log('>', o))
+  //   .on('data', d => console.log('>', d.length))
+  //   .on('end', () => console.log('----------------'))
+
+  await promisify(finished)(write)
 
   console.log('SH', await device.command('SH'))
 

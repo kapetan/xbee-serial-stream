@@ -1,4 +1,4 @@
-const { Duplex, Readable } = require('stream')
+const { Duplex, Readable, Writable } = require('stream')
 const crc16 = require('./crc16')
 
 const NUL = 0x00
@@ -8,6 +8,7 @@ const EOT = 0x04
 const ACK = 0x06
 const NAK = 0x15
 const CAN = 0x18
+const SUB = 0x1a
 const CRC = 0x43
 
 const SOH_DATA_LENGTH = 128
@@ -17,8 +18,6 @@ const RECEIVE_TIMEOUT = 5000
 const PURGE_TIMEOUT = 2000
 const RETRY_LIMIT = 5
 
-class TimeoutError extends Error {}
-
 function zeros (buffer, offset, length) {
   for (let i = offset; i < offset + length; i++) {
     if (buffer[i]) return false
@@ -27,31 +26,182 @@ function zeros (buffer, offset, length) {
   return true
 }
 
-class YModemSenderStream extends Duplex {
-  constructor (options) {
-    super()
-  }
+class TimeoutError extends Error {}
 
-  createWriteStream (filename, options) {
-
-  }
-
-  _read (n) {}
-
-  _write (data, encoding, cb) {
-
-  }
-}
-
-class YModemReceiverStream extends Duplex {
+class Stream extends Duplex {
   constructor (options) {
     super()
 
     this._buffer = Buffer.alloc(0)
     this._cb = null
     this._onreadable = null
+    this._onwritable = null
   }
 
+  _read (n) {
+    if (this._onwritable) this._onwritable()
+  }
+
+  _write (data, encoding, cb) {
+    this._cb = cb
+    this._buffer = Buffer.concat([this._buffer, data])
+    if (this._onreadable) this._onreadable(this._buffer, cb)
+  }
+
+  _destroy (err, cb) {
+    if (this._onreadable) this._onreadable(null, cb, err)
+    else cb(err)
+  }
+
+  _send (b) {
+    if (this.push(b)) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      this._onwritable = () => {
+        this._onwritable = null
+        resolve()
+      }
+    })
+  }
+
+  _receive (n, t) {
+    return new Promise((resolve, reject) => {
+      let timeout = null
+
+      const onreadable = (buffer, cb, err) => {
+        clearTimeout(timeout)
+
+        if (buffer == null) {
+          reject(err || new Error('unexpected end of stream'))
+          cb()
+        } else if (buffer.length < n) {
+          timeout = setTimeout(() => {
+            this._onreadable = null
+            reject(new TimeoutError('receive timed out'))
+          }, t)
+
+          this._onreadable = onreadable
+          if (cb) cb()
+        } else {
+          this._onreadable = null
+          const data = buffer.slice(0, n)
+          this._buffer = buffer.slice(n)
+          resolve(data)
+        }
+      }
+
+      onreadable(this._buffer, () => {
+        if (this._cb) this._cb()
+        this._cb = null
+      })
+    })
+  }
+}
+
+class YModemSenderStream extends Stream {
+  createWriteStream (options) {
+    let sending = Promise.resolve()
+    let buffer = Buffer.alloc(SOH_DATA_LENGTH)
+
+    if (options && options.filename) {
+      const n = buffer.write(options.filename, 0)
+      if (options.length != null) buffer.write(options.length.toString(), n + 1)
+    }
+
+    let initial = true
+    let mode = SOH
+    let blockCount = 0
+    let canCount = 0
+    let tries = 0
+
+    const send = async (b) => {
+      await sending
+      sending = this._send(b)
+    }
+
+    const initialize = async () => {
+      for (let i = 0; i < RETRY_LIMIT; i++) {
+        const [b] = await this._receive(1, RECEIVE_TIMEOUT)
+        if (b === CRC) return
+      }
+
+      throw new Error('receive limit reached')
+    }
+
+    const write = async (data) => {
+      if (initial) {
+        initial = false
+        await initialize()
+      }
+
+      buffer = Buffer.concat([buffer, data])
+
+      while (true) {
+        const length = (mode === SOH) ? SOH_DATA_LENGTH : STX_DATA_LENGTH
+
+        if (buffer.length < length) break
+
+        const payload = Buffer.alloc(length + 5)
+        const checksum = crc16(buffer, 0, length)
+
+        payload[0] = mode
+        payload[1] = blockCount
+        payload[2] = 0xff - blockCount
+        buffer.copy(payload, 3, 0, length)
+        payload.writeUInt16BE(checksum, payload.length - 2)
+
+        await send(payload)
+
+        let i
+
+        for (i = 0; i < RETRY_LIMIT; i++) {
+          const [b] = await this._receive(1, RECEIVE_TIMEOUT)
+
+          if (b !== CAN) canCount = 0
+
+          if (b === ACK) {
+            buffer = buffer.slice(length)
+            mode = STX
+            blockCount = (blockCount + 1) % 256
+            tries = 0
+            break
+          } else if (b === NAK) {
+            tries++
+            if (tries >= RETRY_LIMIT) throw new Error('nak limit reached')
+            break
+          } else if (b === CAN) {
+            canCount++
+            if (canCount > 1) throw new Error('transfer cancelled by remote')
+          }
+        }
+
+        if (i === RETRY_LIMIT) throw new Error('receive limit reached')
+      }
+    }
+
+    const final = async () => {
+      if (buffer.length) {
+        const fill = Buffer.allocUnsafe(STX_DATA_LENGTH - buffer.length)
+        fill.fill(SUB)
+        await write(fill)
+      }
+
+      if (options && options.filename) {
+        for (let i = 0; i < RETRY_LIMIT; i++) {
+          await send(Buffer.of(EOT))
+          const [b] = await this._receive(1, RECEIVE_TIMEOUT)
+          if (b === ACK) return
+        }
+      }
+    }
+
+    return new Writable({
+      write: (data, encoding, cb) => write(data).then(cb, cb),
+      final: cb => final().then(cb, cb)
+    })
+  }
+}
+
+class YModemReceiverStream extends Stream {
   createReadStream () {
     const self = this
     let headerBlock = true
@@ -61,8 +211,8 @@ class YModemReceiverStream extends Duplex {
     let tries = 0
     let fileLength = 0
 
-    const send = (...b) => {
-      this.push(Buffer.from(b))
+    const send = (b) => {
+      this.push(Buffer.of(b))
     }
 
     const nak = async () => {
@@ -81,8 +231,19 @@ class YModemReceiverStream extends Duplex {
       send(CRC)
 
       while (true) {
-        const [b] = await self._receive(1, RECEIVE_TIMEOUT)
+        let b
         let length = 0
+
+        try {
+          [b] = await self._receive(1, RECEIVE_TIMEOUT)
+        } catch (err) {
+          if (err instanceof TimeoutError) {
+            await nak()
+            continue
+          }
+
+          throw err
+        }
 
         if (b !== EOT) eotCount = 0
         if (b !== CAN) canCount = 0
@@ -106,17 +267,29 @@ class YModemReceiverStream extends Duplex {
           case CAN:
             canCount++
             ack()
-            if (canCount === 0) continue
-            else return
+            if (canCount === 1) continue
+            else throw new Error('transfer cancelled by remote')
           default:
             await nak()
             continue
         }
 
-        const block = await self._receive(length + 4, RECEIVE_TIMEOUT)
+        let block
+
+        try {
+          block = await self._receive(length + 4, RECEIVE_TIMEOUT)
+        } catch (err) {
+          if (err instanceof TimeoutError) {
+            await nak()
+            continue
+          }
+
+          throw err
+        }
+
         const [n, m] = block
 
-        if (n + m !== 255 || n !== blockCount) {
+        if (n + m !== 0xff || n !== blockCount) {
           await nak()
           continue
         }
@@ -154,25 +327,12 @@ class YModemReceiverStream extends Duplex {
         }
 
         headerBlock = false
-        blockCount++
+        blockCount = (blockCount + 1) % 256
       }
     }
 
     const stream = Readable.from(receiver())
     return stream
-  }
-
-  _read (n) {}
-
-  _write (data, encoding, cb) {
-    this._cb = cb
-    this._buffer = Buffer.concat([this._buffer, data])
-    if (this._onreadable) this._onreadable(this._buffer, cb)
-  }
-
-  _destroy (err, cb) {
-    if (this._onreadable) this._onreadable(null, cb, err)
-    else cb(err)
   }
 
   async _purge () {
@@ -185,39 +345,6 @@ class YModemReceiverStream extends Duplex {
       if (err instanceof TimeoutError) return
       throw err
     }
-  }
-
-  _receive (n, t) {
-    return new Promise((resolve, reject) => {
-      let timeout = null
-
-      const onreadable = (buffer, cb, err) => {
-        clearTimeout(timeout)
-
-        if (buffer == null) {
-          reject(err || new Error('unexpected end of stream'))
-          cb()
-        } else if (buffer.length < n) {
-          timeout = setTimeout(() => {
-            this._onreadable = null
-            reject(new TimeoutError('receive timed out'))
-          }, t)
-
-          this._onreadable = onreadable
-          if (cb) cb()
-        } else {
-          this._onreadable = null
-          const data = buffer.slice(0, n)
-          this._buffer = buffer.slice(n)
-          resolve(data)
-        }
-      }
-
-      onreadable(this._buffer, () => {
-        if (this._cb) this._cb()
-        this._cb = null
-      })
-    })
   }
 }
 
