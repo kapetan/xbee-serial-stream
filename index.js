@@ -124,7 +124,7 @@ class DeviceStream extends Duplexify {
 
   createWriteStream (filename, options) {
     const sender = new YModemSenderStream()
-    const write = sender.createWriteStream({ filename: filename, ...options })
+    const write = sender.createWriteStream({ name: filename, ...options })
 
     const command = async () => {
       await this._request
@@ -184,66 +184,4 @@ class DeviceStream extends Duplexify {
   }
 }
 
-const main = async function () {
-  const { Transform } = require('stream')
-  const SerialPort = require('serialport')
-
-  const port = new SerialPort('/dev/tty.usbserial-1420', {
-    baudRate: 9600
-  })
-
-  const device = new DeviceStream()
-
-  device
-    .pipe(new Transform({
-      transform: (d, e, c) => {
-        console.log('send', d)
-        c(null, d)
-      }
-    }))
-    .pipe(port)
-    .pipe(new Transform({
-      transform: (d, e, c) => {
-        console.log('receive', d)
-        c(null, d)
-      }
-    }))
-    .pipe(device)
-
-  console.log('FS RM', await device.command('FS RM /flash/text.txt'))
-
-  const write = device.createWriteStream('/flash/text.txt', { length: 1800 })
-
-  write
-    .on('error', err => console.error(err))
-    .on('finish', () => console.log('----------------'))
-
-  write.write(Buffer.alloc(1500).fill('hello'))
-  write.write(Buffer.alloc(300).fill('world'))
-  write.end()
-
-  // const read = device.createReadStream('/flash/main.mpy')
-
-  // read
-  //   .on('error', err => console.error(err))
-  //   .on('file', o => console.log('>', o))
-  //   .on('data', d => console.log('>', d.length))
-  //   .on('end', () => console.log('----------------'))
-
-  await promisify(finished)(write)
-
-  console.log('SH', await device.command('SH'))
-
-  // console.log(await device.command('FS GET /flash/main.mpy'))
-
-  // console.log('+++', await device.request('+++'))
-  // console.log('NI', await device.command('NI'))
-  // console.log('SH', await device.command('SH'))
-  // console.log('FS LS', await device.command('FS LS', null, ''))
-  // console.log('FS PWD', await device.command('FS PWD'))
-  // console.log('FS HASH /flash/main.mpy', await device.command('FS HASH /flash/main.mpy'))
-  // console.log('FS INFO', await device.command('FS INFO', null, ''))
-  // console.log('FS INFO FULL', await device.command('FS INFO FULL', null, ''))
-}
-
-main().catch(err => console.error(err))
+module.exports = DeviceStream

@@ -102,8 +102,8 @@ class YModemSenderStream extends Stream {
     let sending = Promise.resolve()
     let buffer = Buffer.alloc(SOH_DATA_LENGTH)
 
-    if (options && options.filename) {
-      const n = buffer.write(options.filename, 0)
+    if (options && options.name) {
+      const n = buffer.write(options.name, 0)
       if (options.length != null) buffer.write(options.length.toString(), n + 1)
     }
 
@@ -185,7 +185,7 @@ class YModemSenderStream extends Stream {
         await write(fill)
       }
 
-      if (options && options.filename) {
+      if (options && options.name) {
         for (let i = 0; i < RETRY_LIMIT; i++) {
           await send(Buffer.of(EOT))
           const [b] = await this._receive(1, RECEIVE_TIMEOUT)
@@ -302,8 +302,7 @@ class YModemReceiverStream extends Stream {
         }
 
         if (headerBlock && zeros(block, 2, block.length - 4)) {
-          stream.emit('file', { length: 0 })
-          self.emit('file', { length: 0 }, stream)
+          stream.emit('file', { length: 0 }, stream)
           ack()
           return
         } else if (headerBlock) {
@@ -313,8 +312,7 @@ class YModemReceiverStream extends Stream {
           fileLength = block.toString('utf8', i + 1, j)
           fileLength = parseInt(fileLength, 10)
 
-          stream.emit('file', { name, length: fileLength })
-          self.emit('file', { name, length: fileLength }, stream)
+          stream.emit('file', { name, length: fileLength }, stream)
 
           ack()
           send(CRC)
