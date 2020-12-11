@@ -1,15 +1,15 @@
-# xbee-stream
+# xbee-serial-stream
 
 XBee serial protocol implementation.
 
-    npm install xbee-stream
+    npm install xbee-serial-stream
 
 ## Usage
 
 This library is transport agnostic. It implements the XBee serial protocol for sending AT commands. The following example shows how to use it with the [serialport](https://serialport.io) module.
 
 ```javascript
-const DeviceStream = require('xbee-stream')
+const DeviceStream = require('xbee-serial-stream')
 const SerialPort = require('serialport')
 
 const stream = new DeviceStream()
