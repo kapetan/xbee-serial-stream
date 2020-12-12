@@ -6,10 +6,17 @@ const { YModemReceiverStream, YModemSenderStream } = require('./ymodem-stream')
 
 const DELIMETER = Buffer.from('\r')
 
+function pendingBuffer (stream) {
+  return Buffer.concat([...stream.writableBuffer.map(buf => buf.chunk), stream.receiveBuffer])
+}
+
 class CommandStream extends Duplex {
   constructor () {
     super()
-    this._buffer = Buffer.alloc(0)
+
+    this.receiveBuffer = Buffer.alloc(0)
+    this._receiveContinue = null
+    this._onreceive = null
   }
 
   command (cmd, value, terminator) {
@@ -18,45 +25,66 @@ class CommandStream extends Duplex {
     return this.request('AT' + cmd + value + '\r', error, terminator)
   }
 
-  request (data, error, terminator) {
-    return new Promise((resolve, reject) => {
-      this.push(data)
+  async request (data, error, terminator) {
+    this.push(data)
+    const lines = []
 
-      const lines = []
-      const onresponse = data => {
-        if (terminator == null) {
-          lines.push(data)
-          this.removeListener('response', onresponse)
-          resolve(lines)
-        } else if (data === terminator) {
-          this.removeListener('response', onresponse)
-          resolve(lines)
-        } else if (data.startsWith(error)) {
-          this.removeListener('response', onresponse)
-          reject(new Error('error response: ' + data))
+    while (true) {
+      const line = await this._receive()
+
+      if (line.startsWith(error)) {
+        throw new Error('error response: ' + line)
+      } else if (terminator == null) {
+        lines.push(line)
+        break
+      } else if (line === terminator) {
+        break
+      } else {
+        lines.push(line)
+      }
+    }
+
+    return lines
+  }
+
+  _receive () {
+    return new Promise((resolve, reject) => {
+      const onreceive = (buffer, cb, err) => {
+        let position
+
+        if (buffer == null) {
+          reject(err || new Error('unexpected end of stream'))
+          cb()
+        } else if ((position = buffer.indexOf(DELIMETER)) !== -1) {
+          this._onreceive = null
+          const line = buffer.slice(0, position)
+          this.receiveBuffer = buffer.slice(position + DELIMETER.length)
+          resolve(line.toString('utf8'))
         } else {
-          lines.push(data)
+          this._onreceive = onreceive
+          if (cb) cb()
         }
       }
 
-      this.on('response', onresponse)
+      onreceive(this.receiveBuffer, () => {
+        const cb = this._receiveContinue
+        this._receiveContinue = null
+        if (cb) cb()
+      })
     })
   }
 
   _read (n) {}
 
   _write (data, encoding, cb) {
-    let buffer = Buffer.concat([this._buffer, data])
-    let position = 0
+    this._receiveContinue = cb
+    this.receiveBuffer = Buffer.concat([this.receiveBuffer, data])
+    if (this._onreceive) this._onreceive(this.receiveBuffer, cb)
+  }
 
-    while ((position = buffer.indexOf(DELIMETER)) !== -1) {
-      const line = buffer.slice(0, position)
-      this.emit('response', line.toString('utf8'))
-      buffer = buffer.slice(position + DELIMETER.length)
-    }
-
-    this._buffer = buffer
-    cb()
+  _destroy (err, cb) {
+    if (this._onreceive) this._onreceive(null, cb, err)
+    else cb(err)
   }
 }
 
@@ -66,7 +94,6 @@ class DeviceStream extends Duplexify {
 
     this._lock = mutexify()
     this._commandStream = new CommandStream()
-    this._ymodemStream = null
     this._request = this._requestCommandMode()
 
     this._setStream(this._commandStream)
@@ -99,6 +126,7 @@ class DeviceStream extends Duplexify {
         throw err
       }
 
+      receiver.write(pendingBuffer(this._commandStream))
       this._setStream(receiver)
 
       try {
@@ -110,6 +138,8 @@ class DeviceStream extends Duplexify {
       } catch (err) {
         // Ignore, already handled by the stream
       } finally {
+        this._commandStream = new CommandStream()
+        this._commandStream.write(pendingBuffer(receiver))
         this._setStream(this._commandStream)
         await this._waitForResponse('OK')
         release()
@@ -138,6 +168,7 @@ class DeviceStream extends Duplexify {
         throw err
       }
 
+      sender.write(pendingBuffer(this._commandStream))
       this._setStream(sender)
 
       try {
@@ -148,6 +179,8 @@ class DeviceStream extends Duplexify {
       } catch (err) {
         // Ignore, already handled by the stream
       } finally {
+        this._commandStream = new CommandStream()
+        this._commandStream.write(pendingBuffer(sender))
         this._setStream(this._commandStream)
         await this._waitForResponse('OK')
         release()
@@ -161,8 +194,8 @@ class DeviceStream extends Duplexify {
   }
 
   _setStream (stream) {
-    this.setReadable(stream)
     this.setWritable(stream)
+    this.setReadable(stream)
   }
 
   async _requestCommandMode () {
@@ -171,16 +204,8 @@ class DeviceStream extends Duplexify {
   }
 
   async _waitForResponse (value) {
-    return new Promise((resolve, reject) => {
-      const onresponse = data => {
-        if (data === value) {
-          this._commandStream.removeListener('response', onresponse)
-          resolve()
-        }
-      }
-
-      this._commandStream.on('response', onresponse)
-    })
+    let response
+    while (response !== value) response = await this._commandStream._receive()
   }
 }
 

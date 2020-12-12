@@ -32,32 +32,32 @@ class Stream extends Duplex {
   constructor (options) {
     super()
 
-    this._buffer = Buffer.alloc(0)
-    this._cb = null
-    this._onreadable = null
-    this._onwritable = null
+    this.receiveBuffer = Buffer.alloc(0)
+    this._receiveContinue = null
+    this._onreceive = null
+    this._onsend = null
   }
 
   _read (n) {
-    if (this._onwritable) this._onwritable()
+    if (this._onsend) this._onsend()
   }
 
   _write (data, encoding, cb) {
-    this._cb = cb
-    this._buffer = Buffer.concat([this._buffer, data])
-    if (this._onreadable) this._onreadable(this._buffer, cb)
+    this._receiveContinue = cb
+    this.receiveBuffer = Buffer.concat([this.receiveBuffer, data])
+    if (this._onreceive) this._onreceive(this.receiveBuffer, cb)
   }
 
   _destroy (err, cb) {
-    if (this._onreadable) this._onreadable(null, cb, err)
+    if (this._onreceive) this._onreceive(null, cb, err)
     else cb(err)
   }
 
   _send (b) {
     if (this.push(b)) return Promise.resolve()
     return new Promise((resolve, reject) => {
-      this._onwritable = () => {
-        this._onwritable = null
+      this._onsend = () => {
+        this._onsend = null
         resolve()
       }
     })
@@ -67,7 +67,7 @@ class Stream extends Duplex {
     return new Promise((resolve, reject) => {
       let timeout = null
 
-      const onreadable = (buffer, cb, err) => {
+      const onreceive = (buffer, cb, err) => {
         clearTimeout(timeout)
 
         if (buffer == null) {
@@ -75,23 +75,24 @@ class Stream extends Duplex {
           cb()
         } else if (buffer.length < n) {
           timeout = setTimeout(() => {
-            this._onreadable = null
+            this._onreceive = null
             reject(new TimeoutError('receive timed out'))
           }, t)
 
-          this._onreadable = onreadable
+          this._onreceive = onreceive
           if (cb) cb()
         } else {
-          this._onreadable = null
+          this._onreceive = null
           const data = buffer.slice(0, n)
-          this._buffer = buffer.slice(n)
+          this.receiveBuffer = buffer.slice(n)
           resolve(data)
         }
       }
 
-      onreadable(this._buffer, () => {
-        if (this._cb) this._cb()
-        this._cb = null
+      onreceive(this.receiveBuffer, () => {
+        const cb = this._receiveContinue
+        this._receiveContinue = null
+        if (cb) cb()
       })
     })
   }
@@ -336,7 +337,7 @@ class YModemReceiverStream extends Stream {
   async _purge () {
     try {
       while (true) {
-        this._buffer = Buffer.alloc(0)
+        this.receiveBuffer = Buffer.alloc(0)
         await this._receive(1, PURGE_TIMEOUT)
       }
     } catch (err) {
