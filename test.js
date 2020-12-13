@@ -1,5 +1,4 @@
 const test = require('tape')
-// const { YModemReceiverStream, YModemSenderStream } = require('./ymodem-stream')
 const DeviceStream = require('.')
 
 test('command mode', t => {
@@ -104,7 +103,6 @@ test('create read stream', t => {
       t.deepEqual(data, Buffer.from('ATFS GET /flash/test.txt\r'))
 
       device.write('Sending file with YMODEM...\r')
-      // device.write('C')
 
       device.once('data', data => {
         t.deepEqual(data, Buffer.from('C'))
