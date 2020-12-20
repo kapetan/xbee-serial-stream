@@ -26,9 +26,7 @@ const sh = await stream.command('SH')
 The `FS PUT` command is supported using `createWriteStream` method. It initiates an YMODEM file transfer session and returns a writable stream which can be written to.
 
 ```javascript
-const writeStream = stream.createWriteStream('/flash/test.txt', {
-  length: 11
-})
+const writeStream = stream.createWriteStream('/flash/test.txt', 11)
 
 writeStream.write('hello')
 writeStream.write(' ')
@@ -61,14 +59,13 @@ Create new instance of the protocol stream. The class implements the `Duplex` st
 
 Execute an AT command on the device and await the response.
 
-##### `createWriteStream(filename, [options])`
+##### `createWriteStream(name, length)`
 
-- `filename` Name of the file on the device.
-- `options`
-  - `length` (optional) The length of the file.
+- `name` Name of the file on the device.
+- `length` The length of the file.
 - Returns: `Writable` stream
 
-##### `createReadStream(filename)`
+##### `createReadStream(name)`
 
-- `filename` Name of the file on the device.
+- `name` Name of the file on the device.
 - Returns: `Readable` stream. The readable stream emits a `file` event, when name and length of the file has been read from the YMODEM header.
