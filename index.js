@@ -10,6 +10,18 @@ function pendingBuffer (stream) {
   return Buffer.concat([...stream.writableBuffer.map(buf => buf.chunk), stream.receiveBuffer])
 }
 
+function matcher (terminator) {
+  if (typeof terminator === 'function') return terminator
+  if (typeof terminator === 'string') return line => line === terminator
+  if (terminator instanceof RegExp) return line => terminator.test(line)
+  if (terminator == null) {
+    return (line, lines) => {
+      lines.push(line)
+      return true
+    }
+  }
+}
+
 class CommandStream extends Duplex {
   constructor () {
     super()
@@ -27,6 +39,7 @@ class CommandStream extends Duplex {
 
   async request (data, error, terminator) {
     this.push(data)
+    terminator = matcher(terminator)
     const lines = []
 
     while (true) {
@@ -34,10 +47,7 @@ class CommandStream extends Duplex {
 
       if (line.startsWith(error)) {
         throw new Error('error response: ' + line)
-      } else if (terminator == null) {
-        lines.push(line)
-        break
-      } else if (line === terminator) {
+      } else if (terminator(line, lines)) {
         break
       } else {
         lines.push(line)
@@ -192,8 +202,7 @@ class DeviceStream extends Duplexify {
   }
 
   async _requestCommandMode () {
-    const [result] = await this._commandStream.request('+++')
-    if (result !== 'OK') throw new Error('unexpected response: ' + result)
+    await this._commandStream.request('+++', null, /OK$/)
   }
 
   async _waitForResponse (value) {

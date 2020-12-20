@@ -30,6 +30,27 @@ test('get setting command', t => {
     })
 })
 
+test('get setting command preceded by garbage', t => {
+  const device = new DeviceStream()
+
+  device.once('data', data => {
+    t.deepEqual(data, Buffer.from('+++'))
+    device.write('test\r')
+    device.write('testOK\r')
+
+    device.once('data', data => {
+      t.deepEqual(data, Buffer.from('ATTT\r'))
+      device.write('VALUE\r')
+    })
+  })
+
+  device.command('TT')
+    .then(response => {
+      t.deepEqual(response, ['VALUE'])
+      t.end()
+    })
+})
+
 test('get multi line setting command', t => {
   const device = new DeviceStream()
 
