@@ -110,16 +110,16 @@ class DeviceStream extends Duplexify {
     }
   }
 
-  createReadStream (filename) {
+  createReadStream (name) {
     const receiver = new YModemReceiverStream()
-    const read = receiver.createReadStream()
+    const read = receiver.createReadStream({ end: true })
 
     const command = async () => {
       await this._request
       const release = await this._lock()
 
       try {
-        const [result] = await this._commandStream.command('FS GET ' + filename)
+        const [result] = await this._commandStream.command('FS GET ' + name)
         if (result !== 'Sending file with YMODEM...') throw new Error('unexpected response: ' + result)
       } catch (err) {
         release()
@@ -131,10 +131,6 @@ class DeviceStream extends Duplexify {
 
       try {
         await promisify(finished)(read)
-        // Followed by an empty file header
-        const empty = receiver.createReadStream()
-        empty.resume()
-        await promisify(finished)(empty)
       } catch (err) {
         // Ignore, already handled by the stream
       } finally {
@@ -152,16 +148,16 @@ class DeviceStream extends Duplexify {
     return read
   }
 
-  createWriteStream (filename, options) {
+  createWriteStream (name, length) {
     const sender = new YModemSenderStream()
-    const write = sender.createWriteStream({ name: filename, ...options })
+    const write = sender.createWriteStream({ name, length, end: true })
 
     const command = async () => {
       await this._request
       const release = await this._lock()
 
       try {
-        const [result] = await this._commandStream.command('FS PUT ' + filename)
+        const [result] = await this._commandStream.command('FS PUT ' + name)
         if (result !== 'Receiving file with YMODEM...') throw new Error('unexpected response: ' + result)
       } catch (err) {
         release()
@@ -173,9 +169,6 @@ class DeviceStream extends Duplexify {
 
       try {
         await promisify(finished)(write)
-        const empty = sender.createWriteStream()
-        empty.end()
-        await promisify(finished)(empty)
       } catch (err) {
         // Ignore, already handled by the stream
       } finally {

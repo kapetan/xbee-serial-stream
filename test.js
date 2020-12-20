@@ -269,7 +269,7 @@ test('create write stream', t => {
     })
   })
 
-  const write = device.createWriteStream('/flash/test.txt', { length: 5 })
+  const write = device.createWriteStream('/flash/test.txt', 5)
 
   write.end('hello')
 })

@@ -1,4 +1,6 @@
-const { Duplex, Readable, Writable } = require('stream')
+const { Duplex, Readable, Writable, finished } = require('stream')
+const { once } = require('stream')
+const { promisify } = require('util')
 const crc16 = require('./crc16')
 
 const NUL = 0x00
@@ -190,7 +192,10 @@ class YModemSenderStream extends Stream {
         for (let i = 0; i < RETRY_LIMIT; i++) {
           await send(Buffer.of(EOT))
           const [b] = await this._receive(1, RECEIVE_TIMEOUT)
-          if (b === ACK) return
+          if (b === ACK) {
+            if (options.end) await this.endTransmission()
+            return
+          }
         }
       }
     }
@@ -200,10 +205,16 @@ class YModemSenderStream extends Stream {
       final: cb => final().then(cb, cb)
     })
   }
+
+  async endTransmission () {
+    const empty = this.createWriteStream()
+    empty.end()
+    await promisify(finished)(empty)
+  }
 }
 
 class YModemReceiverStream extends Stream {
-  createReadStream () {
+  createReadStream (options) {
     const self = this
     let headerBlock = true
     let blockCount = 0
@@ -263,6 +274,7 @@ class YModemReceiverStream extends Stream {
               continue
             } else {
               ack()
+              if (options && options.end) await self.endTransmission()
               return
             }
           case CAN:
@@ -332,6 +344,14 @@ class YModemReceiverStream extends Stream {
 
     const stream = Readable.from(receiver())
     return stream
+  }
+
+  async endTransmission () {
+    const empty = this.createReadStream()
+    empty.resume()
+    const file = await once(empty, 'file')
+    await promisify(finished)(empty)
+    return file.name == null
   }
 
   async _purge () {
