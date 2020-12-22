@@ -50,10 +50,9 @@ readStream.on('data', data => {})
 
 Create new instance of the protocol stream. The class implements the `Duplex` stream interface, everything written to an instance is treated as incoming data from the remote endpoint and everything read is outgoing to data to the endpoint.
 
-##### `async command(cmd, [value], [terminator])`
+##### `async command(cmd, [terminator])`
 
-- `cmd` AT command to execute. Usually two characters long, but may be longer, for example `FS LS`.
-- `value` (optional) Set setting identified by the AT command to specified value.
+- `cmd` AT command to execute. Usually two characters long, but may be longer, for example `FS LS`. The command may also optionally be followed by a setting value (separated by a space).
 - `terminator` (optional) The terminator condition for the command response. By default all text before the first carriage return is returned as the response. In some cases an empty string should be used as a the terminator, e.g. `FS LS` returns multiple lines (separated by carriage return) with an empty terminator line.
 - Returns: `Array` of strings. Each entry is a line received from the device.
 

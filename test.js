@@ -65,7 +65,7 @@ test('get multi line setting command', t => {
     })
   })
 
-  device.command('TT', null, '')
+  device.command('TT', '')
     .then(response => {
       t.deepEqual(response, ['VALUE_1', 'VALUE_2'])
       t.end()
@@ -85,7 +85,7 @@ test('set setting command', t => {
     })
   })
 
-  device.command('TT', 'VALUE')
+  device.command('TT VALUE')
     .then(response => {
       t.deepEqual(response, ['DONE'])
       t.end()

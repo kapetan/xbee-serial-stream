@@ -31,10 +31,9 @@ class CommandStream extends Duplex {
     this._onreceive = null
   }
 
-  command (cmd, value, terminator) {
+  command (cmd, terminator) {
     const error = cmd === 'FS' ? 'E' : 'ERROR'
-    value = value ? (' ' + value) : ''
-    return this.request('AT' + cmd + value + '\r', error, terminator)
+    return this.request('AT' + cmd + '\r', error, terminator)
   }
 
   async request (data, error, terminator) {
@@ -109,12 +108,12 @@ class DeviceStream extends Duplexify {
     this._setStream(this._commandStream)
   }
 
-  async command (cmd, value, terminator) {
+  async command (cmd, terminator) {
     await this._request
     const release = await this._lock()
 
     try {
-      return await this._commandStream.command(cmd, value, terminator)
+      return await this._commandStream.command(cmd, terminator)
     } finally {
       release()
     }
